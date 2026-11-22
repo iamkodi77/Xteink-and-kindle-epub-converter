@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+from urllib.parse import unquote
 
 from lxml import etree
 
@@ -56,6 +57,8 @@ class ProcessingOptions:
     filename_format: str = 'author-title'
     filename_template: str = ''
     original_filename: str = ''
+    # Optional user-supplied replacement cover image (path on disk)
+    cover_image_path: str = ''
     # Metadata edits (applied if non-empty)
     metadata_edits: dict = field(default_factory=dict)
 
@@ -83,6 +86,7 @@ class ProcessingReport:
     text_cleanup_summary: str = ''
     os_artifacts_removed: int = 0
     cover_generated: bool = False
+    cover_replaced: bool = False
     # Details
     image_details: list = field(default_factory=list)
 
@@ -105,6 +109,9 @@ class ProcessingReport:
 
         if self.cover_generated:
             parts.append("Generated missing cover image")
+
+        if self.cover_replaced:
+            parts.append("Replaced cover image with uploaded photo")
 
         if self.toc_status:
             parts.append(f"TOC: {self.toc_status}")
@@ -247,7 +254,8 @@ def process_epub(input_path: str, output_path: str,
         report.svg_covers_fixed = fix_svg_covers(work_dir, opf_path)
 
         # Step 9: Generate missing cover (64%)
-        if options.generate_missing_cover:
+        # (skipped when the user uploaded a replacement cover — step 10b adds it)
+        if options.generate_missing_cover and not options.cover_image_path:
             _progress(64, "Checking cover...")
             opf_tree = etree.parse(opf_path)
             meta = extract_metadata(opf_tree)
@@ -275,7 +283,8 @@ def process_epub(input_path: str, output_path: str,
 
                 # Add to OPF
                 cover_href = os.path.relpath(cover_path, opf_dir)
-                add_image_to_opf(opf_path, cover_href, 'cover-image-generated')
+                add_image_to_opf(opf_path, cover_href, 'cover-image-generated',
+                                 properties='cover-image')
                 report.cover_generated = True
 
         # Step 10: Update references (68%)
@@ -292,6 +301,74 @@ def process_epub(input_path: str, output_path: str,
             for css_path in content_files['css']:
                 if os.path.exists(css_path):
                     update_css_references(css_path, rename_map)
+
+        # Step 10b: Replace cover with the user-uploaded photo (69%)
+        if options.cover_image_path and os.path.exists(options.cover_image_path):
+            _progress(69, "Replacing cover image...")
+            with open(options.cover_image_path, 'rb') as f:
+                cover_bytes = f.read()
+
+            # Covers are never split/rotated, even in Light Novel mode
+            cover_image_options = ImageOptions.for_device(
+                options.device,
+                grayscale=options.grayscale,
+                contrast_boost=options.contrast_boost,
+                contrast_factor=options.contrast_factor,
+                quality=options.quality,
+                eink_quantize=options.eink_quantize,
+                light_novel_mode=False,
+                light_novel_rotate_left=options.light_novel_rotate_left,
+            )
+            cover_result = process_image(
+                cover_bytes, Path(options.cover_image_path).name,
+                cover_image_options)[0]
+
+            if cover_result.was_converted:
+                opf_tree = etree.parse(opf_path)
+                meta = extract_metadata(opf_tree)
+                opf_dir = str(Path(opf_path).parent)
+
+                if meta['cover_href']:
+                    # Overwrite the existing cover. After steps 7/10 the cover
+                    # is already a baseline JPEG, so references stay valid; if
+                    # it somehow is not a .jpg, rename and fix the references.
+                    old_cover_path = os.path.join(opf_dir, unquote(meta['cover_href']))
+                    new_filename = f"{Path(old_cover_path).stem}.jpg"
+                    new_cover_path = os.path.join(os.path.dirname(old_cover_path), new_filename)
+                    with open(new_cover_path, 'wb') as f:
+                        f.write(cover_result.output_bytes)
+
+                    if os.path.abspath(new_cover_path) != os.path.abspath(old_cover_path):
+                        if os.path.exists(old_cover_path):
+                            os.unlink(old_cover_path)
+                        old_rel = os.path.relpath(old_cover_path, opf_dir)
+                        cover_rename_map = build_rename_map(work_dir, {old_rel: new_filename})
+                        if cover_rename_map:
+                            update_opf(opf_path, cover_rename_map)
+                            for xhtml_path in content_files['xhtml']:
+                                if os.path.exists(xhtml_path):
+                                    update_xhtml_references(xhtml_path, cover_rename_map)
+                            for css_path in content_files['css']:
+                                if os.path.exists(css_path):
+                                    update_css_references(css_path, cover_rename_map)
+                    report.cover_replaced = True
+                else:
+                    # Book has no cover: add the uploaded photo as the cover
+                    images_dir = os.path.join(opf_dir, 'images')
+                    if not os.path.exists(images_dir):
+                        images_dir = os.path.join(opf_dir, 'Images')
+                        if not os.path.exists(images_dir):
+                            images_dir = os.path.join(opf_dir, 'images')
+                            os.makedirs(images_dir, exist_ok=True)
+
+                    new_cover_path = os.path.join(images_dir, 'cover_uploaded.jpg')
+                    with open(new_cover_path, 'wb') as f:
+                        f.write(cover_result.output_bytes)
+
+                    cover_href = os.path.relpath(new_cover_path, opf_dir)
+                    add_image_to_opf(opf_path, cover_href, 'cover-image-uploaded',
+                                     properties='cover-image')
+                    report.cover_replaced = True
 
         # Step 11: Repair HTML + strip unnecessary attributes (70%)
         _progress(70, "Repairing HTML...")

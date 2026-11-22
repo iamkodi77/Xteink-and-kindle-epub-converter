@@ -182,7 +182,19 @@ function renderFileList(files) {
         const metaLine = [meta.author, meta.series].filter(Boolean).join(' \u2014 ');
 
         card.innerHTML = `
-            <div class="file-cover">${coverHtml}</div>
+            <div class="file-left">
+                <div class="file-cover">${coverHtml}</div>
+                ${file.task_id && !file.error ? `
+                <div class="cover-actions">
+                    <button type="button" class="cover-change-btn" data-task="${file.task_id}">
+                        📷 Change
+                    </button>
+                    <button type="button" class="cover-revert-btn" data-task="${file.task_id}" hidden>
+                        ↺ Original
+                    </button>
+                    <input type="file" accept="image/*" class="cover-input" data-task="${file.task_id}" hidden>
+                </div>` : ''}
+            </div>
             <div class="file-info">
                 <div class="file-name">${escapeHtml(meta.title || file.filename)}</div>
                 <div class="file-meta">${escapeHtml(metaLine)}${sizeStr ? (metaLine ? ' \u00b7 ' : '') + sizeStr : ''}</div>
@@ -194,6 +206,90 @@ function renderFileList(files) {
 
         fileList.appendChild(card);
     });
+}
+
+// ==================== Cover replacement ====================
+
+fileList.addEventListener('click', (e) => {
+    const changeBtn = e.target.closest('.cover-change-btn');
+    if (changeBtn) {
+        const input = fileList.querySelector(`.cover-input[data-task="${changeBtn.dataset.task}"]`);
+        if (input) input.click();
+        return;
+    }
+    const revertBtn = e.target.closest('.cover-revert-btn');
+    if (revertBtn) {
+        revertCover(revertBtn.dataset.task);
+    }
+});
+
+fileList.addEventListener('change', (e) => {
+    const input = e.target.closest('.cover-input');
+    if (input && input.files && input.files[0]) {
+        uploadCover(input.dataset.task, input.files[0]);
+        input.value = '';
+    }
+});
+
+async function uploadCover(taskId, file) {
+    const card = fileList.querySelector(`.file-card[data-task-id="${taskId}"]`);
+    const img = card ? card.querySelector('.cover-img') : null;
+    const noCover = card ? card.querySelector('.no-cover') : null;
+    const revertBtn = card ? card.querySelector('.cover-revert-btn') : null;
+
+    // Local preview immediately
+    const localUrl = URL.createObjectURL(file);
+    if (img) {
+        img.src = localUrl;
+    } else if (noCover) {
+        const newImg = document.createElement('img');
+        newImg.className = 'cover-img';
+        newImg.src = localUrl;
+        noCover.replaceWith(newImg);
+    }
+
+    try {
+        const result = await apiUploadCover(taskId, file);
+        if (!result.ok && result.error) throw new Error(result.error);
+
+        // Use the server-normalized preview
+        if (result.preview) {
+            const el = card.querySelector('.cover-img');
+            if (el) el.src = `data:image/jpeg;base64,${result.preview}`;
+        }
+        const entry = uploadedFiles.find(f => f.task_id === taskId);
+        if (entry) entry.custom_cover = true;
+        if (revertBtn) revertBtn.hidden = false;
+    } catch (err) {
+        alert(`Could not set cover: ${err.message}`);
+        // Restore original cover preview
+        const entry = uploadedFiles.find(f => f.task_id === taskId);
+        const el = card ? card.querySelector('.cover-img') : null;
+        if (el && entry && entry.metadata && entry.metadata.cover_data) {
+            el.src = `data:image/jpeg;base64,${entry.metadata.cover_data}`;
+        }
+        if (revertBtn) revertBtn.hidden = true;
+    } finally {
+        setTimeout(() => URL.revokeObjectURL(localUrl), 10000);
+    }
+}
+
+async function revertCover(taskId) {
+    try {
+        await apiRemoveCover(taskId);
+    } catch (err) { /* ignore */ }
+    const card = fileList.querySelector(`.file-card[data-task-id="${taskId}"]`);
+    const entry = uploadedFiles.find(f => f.task_id === taskId);
+    if (card && entry) {
+        const coverDiv = card.querySelector('.file-cover');
+        const meta = entry.metadata || {};
+        coverDiv.innerHTML = meta.cover_data
+            ? `<img class="cover-img" src="data:image/jpeg;base64,${meta.cover_data}" alt="Cover">`
+            : '<div class="no-cover">No cover</div>';
+        const revertBtn = card.querySelector('.cover-revert-btn');
+        if (revertBtn) revertBtn.hidden = true;
+        entry.custom_cover = false;
+    }
 }
 
 function removeFile(taskId, btn) {
