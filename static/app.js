@@ -46,6 +46,18 @@ async function apiRemove(taskId) {
     });
 }
 
+async function apiUploadCover(taskId, file) {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    const resp = await fetch(`/api/cover/${taskId}`, { method: 'POST', body: form });
+    return resp.json();
+}
+
+async function apiRemoveCover(taskId) {
+    const resp = await fetch(`/api/cover/${taskId}/remove`, { method: 'POST' });
+    return resp.json();
+}
+
 async function apiDownload(taskId) {
     const resp = await fetch(`/api/download/${taskId}`);
     if (!resp.ok) throw new Error('Download failed');
