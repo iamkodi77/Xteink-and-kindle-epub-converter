@@ -9,6 +9,7 @@ Run it with ./run.sh (Linux/macOS) or run.bat (Windows), then open
 http://localhost:5000
 """
 
+import base64
 import io
 import os
 import shutil
@@ -19,6 +20,9 @@ import zipfile
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file, abort
+from PIL import Image
+
+MAX_COVER_SIZE = 20 * 1024 * 1024  # 20 MB for a replacement cover photo
 
 from epub_processor import process_epub, extract_epub_metadata, ProcessingOptions
 from image_processor import DEVICE_PROFILES, DEFAULT_DEVICE
@@ -121,6 +125,9 @@ def _run_job(job_id: str, task_id: str, filename: str, params: dict):
 
     try:
         options = _build_options(filename, params)
+        with _LOCK:
+            cover_path = TASKS.get(task_id, {}).get('cover_path', '')
+        options.cover_image_path = cover_path
         report = process_epub(input_path, output_path, options, progress)
         with _LOCK:
             JOBS[job_id].update({
@@ -140,6 +147,7 @@ def _run_job(job_id: str, task_id: str, filename: str, params: dict):
                     'toc_status': report.toc_status,
                     'metadata_items_stripped': report.metadata_items_stripped,
                     'cover_generated': report.cover_generated,
+                    'cover_replaced': report.cover_replaced,
                     'attrs_stripped': report.attrs_stripped,
                     'text_fixes_total': report.text_fixes_total,
                     'text_cleanup_summary': report.text_cleanup_summary,
@@ -318,6 +326,72 @@ def download_all():
         download_name='optimized-epubs.zip',
         mimetype='application/zip',
     )
+
+
+@app.route('/api/cover/<task_id>', methods=['POST'])
+def upload_cover(task_id):
+    """Upload a replacement cover photo for one EPUB. Stored per task and
+    applied during processing (step 10b of the pipeline)."""
+    with _LOCK:
+        task = TASKS.get(task_id)
+    if not task:
+        return jsonify({'error': 'Unknown task. Upload the file again.'}), 404
+    if 'file' not in request.files:
+        return jsonify({'error': 'No image uploaded'}), 400
+
+    f = request.files['file']
+    filename = f.filename or 'cover.jpg'
+    ext = Path(filename).suffix.lower()
+    if ext not in {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif', '.tif', '.tiff'}:
+        return jsonify({'error': 'Unsupported image type (use JPG, PNG, WebP, BMP, GIF or TIFF)'}), 400
+
+    data = f.read()
+    if len(data) > MAX_COVER_SIZE:
+        return jsonify({'error': f'Cover image too large (max {MAX_COVER_SIZE // (1024 * 1024)}MB)'}), 400
+
+    # Validate it is a real image
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.verify()
+    except Exception:
+        return jsonify({'error': 'Not a valid image file'}), 400
+
+    task_dir = _safe_task_dir(task_id)
+    cover_path = task_dir / f'cover_upload{ext}'
+    with open(cover_path, 'wb') as out:
+        out.write(data)
+
+    # Replace any previous custom cover
+    for old in task_dir.glob('cover_upload.*'):
+        if old != cover_path:
+            old.unlink()
+
+    with _LOCK:
+        TASKS[task_id]['cover_path'] = str(cover_path)
+
+    # Small base64 preview for the UI
+    preview_img = Image.open(io.BytesIO(data))
+    preview_img.thumbnail((200, 300))
+    buf = io.BytesIO()
+    preview_img.convert('RGB').save(buf, format='JPEG', quality=70)
+    preview = base64.b64encode(buf.getvalue()).decode('ascii')
+
+    return jsonify({'ok': True, 'preview': preview, 'filename': filename})
+
+
+@app.route('/api/cover/<task_id>/remove', methods=['POST'])
+def remove_cover(task_id):
+    """Remove a previously uploaded replacement cover (keep the book's own)."""
+    with _LOCK:
+        task = TASKS.get(task_id)
+    if not task:
+        return jsonify({'error': 'Unknown task'}), 404
+    task_dir = _safe_task_dir(task_id)
+    for old in task_dir.glob('cover_upload.*'):
+        old.unlink()
+    with _LOCK:
+        TASKS[task_id]['cover_path'] = ''
+    return jsonify({'ok': True})
 
 
 @app.route('/api/remove', methods=['POST'])

@@ -134,8 +134,13 @@ def update_opf_remove_fonts(opf_path: str, font_files: list[str]) -> int:
     return removed
 
 
-def add_image_to_opf(opf_path: str, image_href: str, image_id: str) -> None:
-    """Add a new image entry to the OPF manifest."""
+def add_image_to_opf(opf_path: str, image_href: str, image_id: str,
+                     properties: str = '') -> None:
+    """Add a new image entry to the OPF manifest.
+
+    If properties contains 'cover-image', also register the EPUB 2
+    <meta name="cover" content="id"/> fallback so older readers find it.
+    """
     tree = etree.parse(opf_path)
     root = tree.getroot()
 
@@ -147,6 +152,16 @@ def add_image_to_opf(opf_path: str, image_href: str, image_id: str) -> None:
     item.set('id', image_id)
     item.set('href', image_href)
     item.set('media-type', 'image/jpeg')
+    if properties:
+        item.set('properties', properties)
+
+    if 'cover-image' in properties.split():
+        metadata = _find_element(root, 'metadata')
+        if metadata is not None and not any(
+                _is_element(m) and m.get('name') == 'cover' for m in metadata):
+            meta = etree.SubElement(metadata, f'{{{NS_OPF}}}meta')
+            meta.set('name', 'cover')
+            meta.set('content', image_id)
 
     tree.write(opf_path, xml_declaration=True, encoding='utf-8', pretty_print=True)
 

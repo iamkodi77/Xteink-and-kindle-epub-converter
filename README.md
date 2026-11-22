@@ -47,7 +47,8 @@ python app.py
 ## Usage
 
 1. **Drop** one or more EPUB files onto the upload zone (up to 100 MB each)
-2. **Edit** title/author if needed (auto-detected from metadata)
+2. **Change the cover photo** if you like — click 📷 Change on a file card and pick any image (JPG/PNG/WebP/BMP/GIF/TIFF, ≤20 MB); it replaces the book's cover (or adds one if missing). ↺ Original reverts it
+3. **Edit** title/author if needed (auto-detected from metadata)
 3. **Pick your device**: Xteink X4, X4 Pro, X3, or Kindle 10th gen
 4. **Pick a preset**: Quick (images + text), Full (device-optimized), or Custom
 5. **Choose an output filename**: original, title/author presets, title only, or a custom template
@@ -64,6 +65,7 @@ Custom filename templates support `{title}`, `{author}`, `{year}`, `{series}`,
 - **Text** — fixes spacing, OCR errors, smart quotes, mojibake encoding
 - **Cleanup** — strips embedded fonts, unused CSS, store metadata, OS artifacts
 - **Structure** — repairs HTML, validates TOC, generates covers, fixes references
+- **Cover photo** — upload your own cover image per book; it is resized/quantized to the device like any other image and replaces the old cover (or is added when the book has none)
 - **Light Novel Mode** — rotates & splits landscape images for vertical reading
 - **JPEG quality** slider + presets, output filename presets/templates
 
